@@ -35,13 +35,13 @@ try:
     import urllib.request as urllib
 except ImportError:
     # Python 2.x
-    import urllib
+    import urllib2 as urllib
 
 try:
     from urllib.error import HTTPError
 except ImportError:
     # Python 2.x
-    from urllib import HTTPError
+    from urllib2 import HTTPError
 
 from pkg_resources import parse_version
 
