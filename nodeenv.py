@@ -346,14 +346,18 @@ def download_node_win(dest_dir, opt):
         node_url += 'x64/'
     node_url += 'node.exe'
 
+    r = None
     try:
-        with urllib.urlopen(node_url) as r:
-            with open(join(dest_dir, 'node-venv.exe'), 'wb') as f:
-                f.write(r.read())
+        r = urllib.urlopen(node_url)
+        with open(join(dest_dir, 'node-venv.exe'), 'wb') as f:
+            f.write(r.read())
     except HTTPError:
         logger.error('The requested version of node does not exist for Windows. '
                      'Use the -l option to see available versions.')
         raise
+    finally:
+        if r: r.close()
+
 
 def download_node(node_url, src_dir, env_dir, opt):
     """
@@ -473,14 +477,18 @@ def install_npm_win(env_dir, opt):
 
     install_ver = opt.npm
     if install_ver == 'latest':
-        with urllib.urlopen('http://nodejs.org/dist/npm/') as r:
+        r = None
+        try:
+            r = urllib.urlopen('http://nodejs.org/dist/npm/')
             npm_dist_html = r.read().decode('utf-8')
+        finally:
+            if r: r.close()
 
         A_HREF_RE = re.compile(r'<a href="npm-([\w\.\-]+)\.zip">')
         versions = [ (m.group(1), parse_version(m.group(1))) for m in A_HREF_RE.finditer(npm_dist_html) ]
         versions.sort(key=lambda v: v[1])
         install_ver = versions[-1][0]
-        logger.info('installing v{0} '.format(install_ver), extra=dict(continued=True))
+        logger.info('installing v{0}... '.format(install_ver), extra=dict(continued=True))
 
     bin_dir = get_bin_dir(opt, env_dir)
     mod_dir = get_mod_dir(opt)
@@ -489,10 +497,11 @@ def install_npm_win(env_dir, opt):
     os.close(npm_src_zip_file_path[0])
     npm_src_zip_file_path = npm_src_zip_file_path[1]
     npm_src_dir = tempfile.mkdtemp(dir=env_dir)
+    r = None
     try:
-        with urllib.urlopen('http://nodejs.org/dist/npm/npm-{0}.zip'.format(install_ver)) as r:
-            with open(npm_src_zip_file_path, 'wb') as f:
-                f.write(r.read())
+        r = urllib.urlopen('http://nodejs.org/dist/npm/npm-{0}.zip'.format(install_ver))
+        with open(npm_src_zip_file_path, 'wb') as f:
+            f.write(r.read())
 
         with zipfile.ZipFile(npm_src_zip_file_path) as npm_src_zip:
             npm_src_zip.extractall(npm_src_dir)
@@ -504,6 +513,7 @@ def install_npm_win(env_dir, opt):
                 shutil.copy(join(npm_src_dir, f), bin_dir)
 
     finally:
+        if r: r.close()
         os.remove(npm_src_zip_file_path)
         shutil.rmtree(npm_src_dir, ignore_errors=True)
 
@@ -622,8 +632,12 @@ def print_node_versions_win():
     """
     Prints into stdout all available node.js versions for Windows.
     """
-    with urllib.urlopen('http://nodejs.org/dist/') as r:
+    r = None
+    try:
+        r = urllib.urlopen('http://nodejs.org/dist/')
         dist_html = r.read().decode("utf-8")
+    finally:
+        if r: r.close()
 
     A_HREF_RE = re.compile(r'<a href="v([\w\.\-]+)/">')
     versions = [ (m.group(1), parse_version(m.group(1))) for m in A_HREF_RE.finditer(dist_html) ]
@@ -669,8 +683,12 @@ def get_last_stable_node_version():
     """
     Return last stable node.js version
     """
-    r = urllib.urlopen('http://nodejs.org/dist/latest/')
-    latest_html = r.read().decode('utf-8')
+    r = None
+    try:
+        r = urllib.urlopen('http://nodejs.org/dist/latest/')
+        latest_html = r.read().decode('utf-8')
+    finally:
+        if r: r.close()
 
     TAR_GZ_RE = re.compile(r'node-v([\w\.]+)\.tar\.gz')
     m = TAR_GZ_RE.search(latest_html)
