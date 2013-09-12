@@ -24,7 +24,7 @@ try:
     import ConfigParser
 except ImportError:
     # Python 3
-    from configparser import ConfigParser
+    import configparser as ConfigParser
 
 from pkg_resources import parse_version
 
@@ -466,7 +466,7 @@ def print_node_versions():
     pos = 0
     rowx = []
     while 1:
-        row = p.stdout.readline()
+        row = p.stdout.readline().decode('utf-8')
         pos += 1
         if not row:
             logger.info('\t'.join(rowx))
@@ -501,7 +501,7 @@ def save_env_options(env_dir, opt, file_path='install.cfg'):
     for o, v in opt.__dict__.items():
         config.set(section_name, o, v)
 
-    with open(join(env_dir, file_path), 'wb') as configfile:
+    with open(join(env_dir, file_path), 'w') as configfile:
         config.write(configfile)
 
 
