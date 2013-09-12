@@ -512,6 +512,11 @@ def main():
     opt, args = parse_args()
     if opt.list:
         print_node_versions()
+    elif opt.node != 'system' and sys.version_info.major > 2:
+        logger.error('Python 3.x detected. The node.js build system requires '
+                     'Python 2.6-2.7 to build. Python 3 can only be used with '
+                     'the system version of node.js; specify the -n \'system\' '
+                     'option to use this.')
     else:
         if opt.quiet:
             logger.setLevel(logging.CRITICAL)
