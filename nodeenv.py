@@ -538,11 +538,35 @@ def install_npm(env_dir, src_dir, opt):
     callit(cmd, opt.verbose, True)
     logger.info('done.')
 
+def install_packages_win(env_dir, opt):
+    """
+    Install node.js packages using npm.
+    """
+    logger.info(' * Installing node.js packages ... ',
+        extra=dict(continued=True))
+    with open(opt.requirements, 'r') as f:
+        packages = [ package.strip() for package in f ]
+    real_npm_ver = opt.npm if opt.npm.count(".") == 2 else opt.npm + ".0"
+    if opt.npm == "latest" or real_npm_ver >= "1.0.0":
+        for p in packages:
+            retcode = subprocess.call(['npm', '-g', 'install', p], shell=True)
+            if retcode: logger.error('Could not install {0}.'.format(p))
+    else:
+        for p in packages:
+            retcode = subprocess.call(['npm', '-g', 'install', p], shell=True)
+            if retcode: logger.error('Could not install {0}.'.format(p))
+            retcode = subprocess.call(['npm', '-g', 'activate', p], shell=True)
+            if retcode: logger.error('Could not activate {0}.'.format(p))
+
+    logger.info('done.')
 
 def install_packages(env_dir, opt):
     """
     Install node.js packages via npm
     """
+    if is_windows_nt:
+        return install_packages_win(env_dir, opt)
+
     logger.info(' * Install node.js packages ... ',
         extra=dict(continued=True))
     packages = [package.strip() for package in
