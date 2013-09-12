@@ -725,7 +725,7 @@ def main():
                                       'supported without an existing Python '
                                       'virtualenv.')
 
-    elif opt.node != 'system' and sys.version_info.major > 2:
+    if opt.node != 'system' and sys.version_info.major > 2 and not is_windows_nt:
         logger.error('Python 3.x detected. The node.js build system requires '
                      'Python 2.6-2.7 to build. Python 3 can only be used with '
                      'the system version of node.js; specify the -n \'system\' '
