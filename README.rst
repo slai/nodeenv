@@ -47,8 +47,8 @@ install it from the github `repository`_::
 .. _easy_install: http://pypi.python.org/pypi/setuptools
 
 
-Dependency
-----------
+Dependencies - *nix
+-------------------
 
 For nodeenv
 ^^^^^^^^^^^
@@ -63,8 +63,14 @@ For nodeenv
 For node.js
 ^^^^^^^^^^^
 
-* python
+* Python 2.6 or 2.7
 * libssl-dev
+
+Dependencies - Windows
+----------------------
+
+* Python 2.7 or Python 3.2+
+* virtualenv
 
 Usage
 -----
@@ -80,7 +86,7 @@ Activate new environment::
 
     $ . env/bin/activate
 
-Chek versions of main packages::
+Check versions of main packages::
 
     (env) $ node -v
     v0.4.6
@@ -162,6 +168,37 @@ environment::
     $ npm install -g coffee-script
     $ which coffee
     /home/monty/virtualenvs/my_env/bin/coffee
+
+Windows
+^^^^^^^
+
+On Windows, the functionality is a bit limited. It can only be used in existing
+Python virtualenv environments. This is mainly because Powershell requires
+signed scripts to work best and I don't have a code-signing certificate. By
+piggybacking on a Python virtualenv environment, we can leverage those signed
+Powershell scripts.
+
+Get available node.js versions::
+
+    $ nodeenv --list
+    0.0.1   0.0.2   0.0.3   0.0.4   0.0.5   0.0.6   0.1.0
+    0.1.2   0.1.3   0.1.4   0.1.5   0.1.6   0.1.7   0.1.8
+    0.1.10  0.1.11  0.1.12  0.1.13  0.1.14  0.1.15  0.1.16
+    0.1.18  0.1.19  0.1.20  0.1.21  0.1.22  0.1.23  0.1.24
+    0.1.26  0.1.27  0.1.28  0.1.29  0.1.30  0.1.31  0.1.32
+    0.1.90  0.1.91  0.1.92  0.1.93  0.1.94  0.1.95  0.1.96
+    0.1.98  0.1.99  0.1.100 0.1.101 0.1.102 0.1.103 0.1.104
+    0.2.1   0.2.2   0.2.3   0.2.4   0.2.5   0.2.6   0.3.0
+    0.3.2   0.3.3   0.3.4   0.3.5   0.3.6   0.3.7   0.3.8
+    0.4.1   0.4.2   0.4.3   0.4.4   0.4.5   0.4.6
+
+Create a new environment::
+
+    $ nodeenv -p .
+
+Use the -n option if you wish to specify a specific node.js version.
+
+Environments can then be activated and deactivated as per Python virtualenvs.
 
 
 Alternatives
