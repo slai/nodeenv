@@ -19,6 +19,11 @@ import logging
 import optparse
 import subprocess
 import pipes
+import re
+import tempfile
+import zipfile
+import shutil
+from distutils.dir_util import copy_tree
 
 try:
     import ConfigParser
@@ -26,10 +31,24 @@ except ImportError:
     # Python 3
     import configparser as ConfigParser
 
+try:
+    import urllib.request as urllib
+except ImportError:
+    # Python 2.x
+    import urllib
+
+try:
+    from urllib.error import HTTPError
+except ImportError:
+    # Python 2.x
+    from urllib import HTTPError
+
 from pkg_resources import parse_version
 
 join = os.path.join
 abspath = os.path.abspath
+
+is_windows_nt = os.name == 'nt'
 
 # ---------------------------------------------------------
 # Utils
@@ -76,7 +95,7 @@ def parse_args():
         usage="%prog [OPTIONS] ENV_DIR")
 
     parser.add_option('-n', '--node', dest='node',
-        metavar='NODE_VER', default=get_last_stable_node_version(),
+        metavar='NODE_VER', default=None,
         help='The node.js version to use, e.g., '
         '--node=0.4.3 will use the node-v0.4.3 '
         'to create the new environment. The default is last stable version. '
@@ -95,7 +114,7 @@ def parse_args():
 
     parser.add_option('-q', '--quiet',
         action='store_true', dest='quiet', default=False,
-        help="Quete mode")
+        help="Quiet mode")
 
     parser.add_option('-r', '--requirements',
         dest='requirements', default='', metavar='FILENAME',
@@ -175,6 +194,38 @@ def mkdir(path):
     else:
         logger.debug(' * Directory %s already exists', path)
 
+def get_bin_dir(opt, env_dir=None):
+    """
+    Returns the bin directory path. If env_dir is None, the path returned will
+    be relative to the env_dir.
+    """
+    bin_dir = 'bin'
+
+    if is_windows_nt:
+        # Python virtualenv on Windows prefers the Scripts directory for
+        # executables instead of the bin directory
+        if opt.python_virtualenv:
+            bin_dir = 'Scripts'
+
+    if env_dir:
+        bin_dir = join(env_dir, bin_dir)
+
+    return bin_dir
+
+def get_mod_dir(opt, env_dir=None):
+    """
+    Returns the path to the global node_modules directory, relative to the
+    env root unless env_dir is given.
+    """
+    if is_windows_nt:
+        mod_dir = join(get_bin_dir(opt), 'node_modules')
+    else:
+        mod_dir = join('lib', 'node_modules')
+
+    if env_dir:
+        mod_dir = join(env_dir, mod_dir)
+
+    return mod_dir
 
 def writefile(dest, content, overwrite=True, append=False):
     """
@@ -198,7 +249,7 @@ def writefile(dest, content, overwrite=True, append=False):
             if append:
                 logger.info(' * Appending nodeenv settings to %s', dest)
                 f = open(dest, 'ab')
-                f.write(DISABLE_POMPT.encode('utf-8'))
+                f.write(DISABLE_PROMPT.encode('utf-8'))
                 f.write(content.encode('utf-8'))
                 f.write(ENABLE_PROMPT.encode('utf-8'))
                 f.close()
@@ -283,11 +334,35 @@ def get_node_src_url(version, postfix=''):
         node_url = 'http://nodejs.org/dist/%s' % (tar_name)
     return node_url
 
+def download_node_win(dest_dir, opt):
+    """
+    Download the Windows node binary.
+    """
+    # platform.machine() is better but not available in Python < 2.7
+    is_x64 = 'PROGRAMFILES(X86)' in os.environ
+
+    node_url = 'http://nodejs.org/dist/v{0}/'.format(opt.node)
+    if is_x64:
+        node_url += 'x64/'
+    node_url += 'node.exe'
+
+    try:
+        with urllib.urlopen(node_url) as r:
+            with open(join(dest_dir, 'node-venv.exe'), 'wb') as f:
+                f.write(r.read())
+    except HTTPError:
+        logger.error('The requested version of node does not exist for Windows. '
+                     'Use the -l option to see available versions.')
+        raise
 
 def download_node(node_url, src_dir, env_dir, opt):
     """
     Download source code
     """
+    if is_windows_nt:
+        raise NotImplementedError('Downloading the node source code is not '
+                                  'supported on Windows.')
+
     cmd = []
     cmd.append('curl')
     cmd.append('--silent')
@@ -312,11 +387,39 @@ def download_node(node_url, src_dir, env_dir, opt):
 # ---------------------------------------------------------
 # Virtual environment functions
 
+def install_node_win(env_dir, opt):
+    """
+    Download the pre-compiled node binary and install it into the virtual
+    environment.
+    """
+    logger.info(' * Installing node.js (%s)... ' % opt.node,
+                         extra=dict(continued=True))
+
+    bin_dir = get_bin_dir(opt, env_dir)
+
+    node_exe_path = join(bin_dir, 'node-venv.exe')
+    if os.path.exists(node_exe_path):
+        proc = subprocess.Popen((node_exe_path, '-v'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = proc.communicate()
+
+        cur_ver = stdout.decode('utf-8').strip()
+        if cur_ver[0] == 'v':
+            cur_ver = cur_ver[1:]
+        if cur_ver == opt.node:
+            logger.info('requested version already installed.')
+            return
+
+    download_node_win(bin_dir, opt)
+    logger.info(' done.')
+
 def install_node(env_dir, src_dir, opt):
     """
     Download source code for node.js, unpack it
     and install it in virtual environment.
     """
+    if is_windows_nt:
+        return install_node_win(env_dir, opt)
+
     logger.info(' * Install node.js (%s' % opt.node,
                          extra=dict(continued=True))
 
@@ -360,12 +463,61 @@ def install_node(env_dir, src_dir, opt):
 
     logger.info(' done.')
 
+def install_npm_win(env_dir, opt):
+    """
+    Download source code for npm, unpack it and install it in virtual
+    environment.
+    """
+    logger.info(' * Installing npm.js (%s) ... ' % opt.npm,
+                    extra=dict(continued=True))
+
+    install_ver = opt.npm
+    if install_ver == 'latest':
+        with urllib.urlopen('http://nodejs.org/dist/npm/') as r:
+            npm_dist_html = r.read().decode('utf-8')
+
+        A_HREF_RE = re.compile(r'<a href="npm-([\w\.\-]+)\.zip">')
+        versions = [ (m.group(1), parse_version(m.group(1))) for m in A_HREF_RE.finditer(npm_dist_html) ]
+        versions.sort(key=lambda v: v[1])
+        install_ver = versions[-1][0]
+        logger.info('installing v{0} '.format(install_ver), extra=dict(continued=True))
+
+    bin_dir = get_bin_dir(opt, env_dir)
+    mod_dir = get_mod_dir(opt)
+
+    npm_src_zip_file_path = tempfile.mkstemp(dir=env_dir)
+    os.close(npm_src_zip_file_path[0])
+    npm_src_zip_file_path = npm_src_zip_file_path[1]
+    npm_src_dir = tempfile.mkdtemp(dir=env_dir)
+    try:
+        with urllib.urlopen('http://nodejs.org/dist/npm/npm-{0}.zip'.format(install_ver)) as r:
+            with open(npm_src_zip_file_path, 'wb') as f:
+                f.write(r.read())
+
+        with zipfile.ZipFile(npm_src_zip_file_path) as npm_src_zip:
+            npm_src_zip.extractall(npm_src_dir)
+
+        copy_tree(join(npm_src_dir, 'node_modules'), join(env_dir, mod_dir))
+
+        for f in os.listdir(npm_src_dir):
+            if f.lower().endswith('.cmd'):
+                shutil.copy(join(npm_src_dir, f), bin_dir)
+
+    finally:
+        os.remove(npm_src_zip_file_path)
+        shutil.rmtree(npm_src_dir, ignore_errors=True)
+
+    logger.info('done.')
+
 
 def install_npm(env_dir, src_dir, opt):
     """
     Download source code for npm, unpack it
     and install it in virtual environment.
     """
+    if is_windows_nt:
+        return install_npm_win(env_dir, opt)
+
     logger.info(' * Install npm.js (%s) ... ' % opt.npm,
                     extra=dict(continued=True))
     cmd = ['. %s && curl --silent %s | clean=%s npm_install=%s bash && deactivate_node' % (
@@ -406,19 +558,26 @@ def install_activate(env_dir, opt):
     """
     Install virtual environment activation script
     """
-    files = {'activate': ACTIVATE_SH}
-    bin_dir = join(env_dir, 'bin')
-    mod_dir = join('lib', 'node_modules')
+    files = {
+        'activate': ACTIVATE_SH
+    }
+    if is_windows_nt:
+        files = {
+            'node.bat' : NODE_BAT
+        }
+
+    rel_bin_dir = get_bin_dir(opt)
+    rel_mod_dir = get_mod_dir(opt)
     prompt = opt.prompt or '(%s)' % os.path.basename(os.path.abspath(env_dir))
     mode_0755 = stat.S_IRWXU | stat.S_IXGRP | stat.S_IRGRP | stat.S_IROTH | stat.S_IXOTH
 
     for name, content in files.items():
-        file_path = join(bin_dir, name)
+        file_path = join(env_dir, rel_bin_dir, name)
         content = content.replace('__NODE_VIRTUAL_PROMPT__', prompt)
         content = content.replace('__NODE_VIRTUAL_ENV__', os.path.abspath(env_dir))
-        content = content.replace('__BIN_NAME__', os.path.basename(bin_dir))
-        content = content.replace('__MOD_NAME__', mod_dir)
-        writefile(file_path, content, append=opt.python_virtualenv)
+        content = content.replace('__BIN_NAME__', rel_bin_dir)
+        content = content.replace('__MOD_NAME__', rel_mod_dir)
+        writefile(file_path, content, append=(opt.python_virtualenv and not is_windows_nt))
         os.chmod(file_path, mode_0755)
 
 
@@ -430,33 +589,63 @@ def create_environment(env_dir, opt):
         logger.info(' * Environment already exists: %s', env_dir)
         if not opt.force:
             sys.exit(2)
-    src_dir = abspath(join(env_dir, 'src'))
-    mkdir(src_dir)
+    if is_windows_nt:
+        src_dir = None
+    else:
+        src_dir = abspath(join(env_dir, 'src'))
+        mkdir(src_dir)
     save_env_options(env_dir, opt)
 
+    if opt.node is None:
+        opt.node = get_last_stable_node_version()
     if opt.node != "system":
         install_node(env_dir, src_dir, opt)
     else:
-        mkdir(join(env_dir, 'bin'))
-        mkdir(join(env_dir, 'lib'))
-        mkdir(join(env_dir, 'lib', 'node_modules'))
+        if not is_windows_nt:
+            mkdir(get_bin_dir(opt, env_dir))
+            mkdir(join(env_dir, 'lib'))
+        mkdir(get_mod_dir(opt, env_dir))
+
     # activate script install must be
     # before npm install, npm use activate
     # for install
     install_activate(env_dir, opt)
-    if parse_version(opt.node) < parse_version("0.6.3") or opt.with_npm:
+    if parse_version(opt.node) < parse_version("0.6.3") or opt.with_npm or is_windows_nt:
         install_npm(env_dir, src_dir, opt)
     if opt.requirements:
         install_packages(env_dir, opt)
     # Cleanup
-    if opt.clean_src:
+    if opt.clean_src and not is_windows_nt:
         callit(['rm -rf', pipes.quote(src_dir)], opt.verbose, True, env_dir)
 
+def print_node_versions_win():
+    """
+    Prints into stdout all available node.js versions for Windows.
+    """
+    with urllib.urlopen('http://nodejs.org/dist/') as r:
+        dist_html = r.read().decode("utf-8")
+
+    A_HREF_RE = re.compile(r'<a href="v([\w\.\-]+)/">')
+    versions = [ (m.group(1), parse_version(m.group(1))) for m in A_HREF_RE.finditer(dist_html) ]
+    versions.sort(key=lambda v: v[1])
+
+    pos = 0
+    rowx = [ ]
+    for ver in versions:
+        pos += 1
+        rowx.append(ver[0])
+        if pos % 8 == 0:
+            logger.info('\t'.join(rowx))
+            rowx = []
+    logger.info('\t'.join(rowx))
 
 def print_node_versions():
     """
     Prints into stdout all available node.js versions
     """
+    if is_windows_nt:
+        return print_node_versions_win()
+
     p = subprocess.Popen(
         "curl -s http://nodejs.org/dist/ | "
         "egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | "
@@ -476,20 +665,19 @@ def print_node_versions():
             logger.info('\t'.join(rowx))
             rowx = []
 
-
 def get_last_stable_node_version():
     """
     Return last stable node.js version
     """
-    p = subprocess.Popen(
-        "curl -s http://nodejs.org/dist/latest/ | "
-        "egrep -o 'node-v[0-9]+\.[0-9]+\.[0-9]+' | "
-        "sed -e 's/node-v//' | "
-        "sort -u -k 1,1n -k 2,2n -k 3,3n -t . | "
-        "tail -n1",
-        shell=True, stdout=subprocess.PIPE)
-    return p.stdout.read().decode("utf-8").replace("\n", "")
+    r = urllib.urlopen('http://nodejs.org/dist/latest/')
+    latest_html = r.read().decode('utf-8')
 
+    TAR_GZ_RE = re.compile(r'node-v([\w\.]+)\.tar\.gz')
+    m = TAR_GZ_RE.search(latest_html)
+    if m:
+        return m.group(1)
+    else:
+        raise "<unknown>"
 
 def save_env_options(env_dir, opt, file_path='install.cfg'):
     """
@@ -510,8 +698,33 @@ def main():
     Entry point
     """
     opt, args = parse_args()
+
     if opt.list:
         print_node_versions()
+        return
+
+    if is_windows_nt:
+        if opt.without_ssl:
+            raise NotImplementedError('Installing node from source is not '
+                                      'supported for Windows, therefore the '
+                                      '--without-ssl argument is invalid.')
+        if opt.debug:
+            raise NotImplementedError('Installing node from source is not '
+                                      'supported for Windows, therefore the '
+                                      '--debug argument is invalid.')
+        if opt.load_average:
+            raise NotImplementedError('Installing node from source is not '
+                                      'supported for Windows, therefore the '
+                                      '--load-average argument is invalid.')
+        if opt.clean_src:
+            raise NotImplementedError('Installing node from source is not '
+                                      'supported for Windows, therefore the '
+                                      '--clean-src argument is invalid.')
+        if not opt.python_virtualenv:
+            raise NotImplementedError('Using nodeenv on Windows is not '
+                                      'supported without an existing Python '
+                                      'virtualenv.')
+
     elif opt.node != 'system' and sys.version_info.major > 2:
         logger.error('Python 3.x detected. The node.js build system requires '
                      'Python 2.6-2.7 to build. Python 3 can only be used with '
@@ -534,7 +747,7 @@ def main():
 # ---------------------------------------------------------
 # Shell scripts content
 
-DISABLE_POMPT = """
+DISABLE_PROMPT = """
 # disable nodeenv's prompt
 # (prompt already changed by original virtualenv's script)
 # https://github.com/ekalinin/nodeenv/issues/26
@@ -656,6 +869,20 @@ fi
 if [ -n "$BASH" -o -n "$ZSH_VERSION" ] ; then
     hash -r
 fi
+"""
+
+NODE_BAT = """\
+@ECHO OFF
+
+SETLOCAL
+
+SET "NODE_VIRTUAL_ENV=__NODE_VIRTUAL_ENV__"
+SET "NODE_PATH=%NODE_VIRTUAL_ENV%\\__MOD_NAME__"
+SET "NPM_CONFIG_PREFIX=__NODE_VIRTUAL_ENV__\\__BIN_NAME__"
+
+"%NODE_VIRTUAL_ENV%\\__BIN_NAME__\\node-venv.exe" %*
+
+ENDLOCAL
 """
 
 if __name__ == '__main__':
